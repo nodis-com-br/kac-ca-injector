@@ -14,6 +14,7 @@ configmap_name = os.environ["CA_BUNDLE_CONFIGMAP"]
 ca_bundle_filename = os.environ["CA_BUNDLE_FILENAME"]
 ca_bundle_url = os.environ["CA_BUNDLE_URL"]
 ca_bundle_annotation = os.environ["CA_BUNDLE_ANNOTATION"]
+pod_namespace = os.environ["POD_NAMESPACE"]
 
 
 def create_configmap(v1_api, namespace):
@@ -43,7 +44,7 @@ def mutate():
     modified_spec = copy.deepcopy(spec)
 
     if modified_spec['metadata']['annotations'].get(ca_bundle_annotation) == 'true':
-        namespace = modified_spec['metadata']['namespace']
+        namespace = modified_spec['metadata'].get('namespace', pod_namespace)
         config.load_incluster_config()
         v1_api = client.CoreV1Api()
 
@@ -53,14 +54,14 @@ def mutate():
             create_configmap(v1_api, namespace)
 
         volume = {
-            'name': 'ca-bundle',
+            'name': configmap_name,
             'configMap': {
                 'name': configmap_name,
                 'defaultMode': 420
             }
         }
         volume_mount = {
-            'name': 'ca-bundle',
+            'name': configmap_name,
             'mountPath': f'/etc/ssl/certs/{ca_bundle_filename}',
             'subPath': ca_bundle_filename
         }
