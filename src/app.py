@@ -10,16 +10,12 @@ from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-configmap_name = os.environ["CA_BUNDLE_CONFIGMAP"]
-ca_bundle_filename = os.environ["CA_BUNDLE_FILENAME"]
-ca_bundle_url = os.environ["CA_BUNDLE_URL"]
-ca_bundle_annotation = os.environ["CA_BUNDLE_ANNOTATION"]
-pod_namespace = os.environ["POD_NAMESPACE"]
+
 
 
 def create_configmap(v1_api, namespace):
-    r = requests.get(ca_bundle_url, stream=True)
 
+    r = requests.get(ca_bundle_url, stream=True)
     if r.status_code != 200:
         raise Exception(f"fetch {ca_bundle_url} failed: {r.status_code}")
     else:
