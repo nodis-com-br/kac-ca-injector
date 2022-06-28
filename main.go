@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -15,8 +16,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-
-	"encoding/json"
 )
 
 var (
@@ -39,6 +38,10 @@ func init() {
 	_ = admission.AddToScheme(runtimeScheme)
 }
 
+type Admission struct {
+	Admit bool `json:"admit"`
+}
+
 type admitv1Func func(admission.AdmissionReview) *admission.AdmissionResponse
 
 type admitHandler struct {
@@ -55,6 +58,7 @@ func AdmitHandler(f admitv1Func) admitHandler {
 // function
 func serve(w http.ResponseWriter, r *http.Request, admit admitHandler) {
 
+	// verify the request method
 	if r.Method != "POST" {
 		msg := fmt.Sprintf("%s method not allowed", r.Method)
 		log.Error().Msg(msg)
@@ -62,7 +66,7 @@ func serve(w http.ResponseWriter, r *http.Request, admit admitHandler) {
 		return
 	}
 
-	// verify the content type is accurate
+	// verify the content type
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "application/json" {
 		msg := fmt.Sprintf("contentType=%s, expect application/json", contentType)
@@ -85,7 +89,6 @@ func serve(w http.ResponseWriter, r *http.Request, admit admitHandler) {
 		log.Error().Msg(msg)
 		http.Error(w, msg, http.StatusBadRequest)
 		return
-
 	} else {
 		requestedAdmissionReview, ok := obj.(*admission.AdmissionReview)
 		if !ok {

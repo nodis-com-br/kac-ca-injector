@@ -10,7 +10,11 @@ from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-
+configmap_name = os.environ["CA_BUNDLE_CONFIGMAP"]
+ca_bundle_filename = os.environ["CA_BUNDLE_FILENAME"]
+ca_bundle_url = os.environ["CA_BUNDLE_URL"]
+ca_bundle_annotation = os.environ["CA_BUNDLE_ANNOTATION"]
+pod_namespace = os.environ["POD_NAMESPACE"]
 
 
 def create_configmap(v1_api, namespace):
