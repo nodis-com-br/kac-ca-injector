@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,57 +10,84 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	admission "k8s.io/api/admission/v1"
-	appsv1 "k8s.io/api/apps/v1"
+	"github.com/wI2L/jsondiff"
+
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
+	k8sRuntime "k8s.io/apimachinery/pkg/runtime"
+	k8sSerializer "k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+)
+
+const (
+	keyCABundleURL        = "CA_BUNDLE_URL"
+	keyConfigMapName      = "CA_BUNDLE_CONFIGMAP"
+	keyCABundleFilename   = "CA_BUNDLE_FILENAME"
+	keyCABundleAnnotation = "CA_BUNDLE_ANNOTATION"
 )
 
 var (
-	configmapName      = os.Getenv("CA_BUNDLE_CONFIGMAP")
-	caBundleFilename   = os.Getenv("CA_BUNDLE_FILENAME")
-	caBundleUrl        = os.Getenv("CA_BUNDLE_URL")
-	caBundleAnnotation = os.Getenv("CA_BUNDLE_ANNOTATION")
-	podNamespace       = os.Getenv("POD_NAMESPACE")
-)
-
-var (
-	runtimeScheme = runtime.NewScheme()
-	codecFactory  = serializer.NewCodecFactory(runtimeScheme)
+	runtimeScheme = k8sRuntime.NewScheme()
+	codecFactory  = k8sSerializer.NewCodecFactory(runtimeScheme)
 	deserializer  = codecFactory.UniversalDeserializer()
+	resourceGVR   = metav1.GroupVersionResource{Version: "v1", Resource: "pods"}
 )
+
+type AdmitFunc func(admissionv1.AdmissionReview) *admissionv1.AdmissionResponse
+
+type HandleFunc func(w http.ResponseWriter, r *http.Request)
 
 // add kind AdmissionReview in scheme
 func init() {
 	_ = corev1.AddToScheme(runtimeScheme)
-	_ = admission.AddToScheme(runtimeScheme)
+	_ = admissionv1.AddToScheme(runtimeScheme)
 }
 
-type Admission struct {
-	Admit bool `json:"admit"`
-}
-
-type admitv1Func func(admission.AdmissionReview) *admission.AdmissionResponse
-
-type admitHandler struct {
-	v1 admitv1Func
-}
-
-func AdmitHandler(f admitv1Func) admitHandler {
-	return admitHandler{
-		v1: f,
+func setLogLevel() {
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if os.Getenv("DEBUG") == "true" {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 }
 
-// serve handles the http portion of a request prior to handing to an admit
-// function
-func serve(w http.ResponseWriter, r *http.Request, admit admitHandler) {
+func getKubernetesClientSet() (*kubernetes.Clientset, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		config, _ = clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+	}
+	return kubernetes.NewForConfig(config)
+}
+
+func validateAndDeserialize(ar admissionv1.AdmissionReview) *corev1.Pod {
+	// Validate resource type
+	if ar.Request.Resource != resourceGVR {
+		msg := fmt.Sprintf("expect resource to be %s", resourceGVR)
+		log.Error().Msg(msg)
+		return nil
+	}
+	// Deserialize pod from AdmissionRequest object
+	pod := corev1.Pod{}
+	_, _, _ = deserializer.Decode(ar.Request.Object.Raw, nil, &pod)
+	if pod.Name == "" {
+		msg := fmt.Sprint("deserialized pod is empty")
+		log.Error().Msg(msg)
+		return nil
+	} else {
+		return &pod
+	}
+}
+
+func serve(w http.ResponseWriter, r *http.Request, admitFunc AdmitFunc) {
+
+	setLogLevel()
 
 	// verify the request method
-	if r.Method != "POST" {
+	if r.Method != http.MethodPost {
 		msg := fmt.Sprintf("%s method not allowed", r.Method)
 		log.Error().Msg(msg)
 		http.Error(w, msg, http.StatusMethodNotAllowed)
@@ -69,7 +97,7 @@ func serve(w http.ResponseWriter, r *http.Request, admit admitHandler) {
 	// verify the content type
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "application/json" {
-		msg := fmt.Sprintf("contentType=%s, expect application/json", contentType)
+		msg := fmt.Sprintf("Content-Type=%s, expect application/json", contentType)
 		log.Error().Msg(msg)
 		http.Error(w, msg, http.StatusUnsupportedMediaType)
 		return
@@ -82,108 +110,144 @@ func serve(w http.ResponseWriter, r *http.Request, admit admitHandler) {
 		}
 	}
 
-	log.Info().Msgf("handling request: %s", body)
-	var responseObj runtime.Object
+	log.Debug().Msgf("handling request: %s", body)
+	var responseObj k8sRuntime.Object
 	if obj, gvk, err := deserializer.Decode(body, nil, nil); err != nil {
 		msg := fmt.Sprintf("Request could not be decoded: %v", err)
 		log.Error().Msg(msg)
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	} else {
-		requestedAdmissionReview, ok := obj.(*admission.AdmissionReview)
+		requestedAdmissionReview, ok := obj.(*admissionv1.AdmissionReview)
 		if !ok {
 			msg := fmt.Sprintf("Expected v1.AdmissionReview but got: %T", obj)
 			log.Error().Msg(msg)
 			http.Error(w, msg, http.StatusBadRequest)
 			return
 		}
-		responseAdmissionReview := &admission.AdmissionReview{}
+		responseAdmissionReview := &admissionv1.AdmissionReview{}
 		responseAdmissionReview.SetGroupVersionKind(*gvk)
-		responseAdmissionReview.Response = admit.v1(*requestedAdmissionReview)
+		responseAdmissionReview.Response = admitFunc(*requestedAdmissionReview)
+		if responseAdmissionReview.Response == nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
 		responseAdmissionReview.Response.UID = requestedAdmissionReview.Request.UID
 		responseObj = responseAdmissionReview
-
 	}
-	log.Info().Msgf("sending response: %v", responseObj)
-	respBytes, err := json.Marshal(responseObj)
-	if err != nil {
-		log.Err(err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	log.Debug().Msgf("sending response: %v", responseObj)
+	respBytes, _ := json.Marshal(responseObj)
 	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(respBytes); err != nil {
-		log.Err(err)
-	}
+	_, _ = w.Write(respBytes)
 }
 
-func serveMutate(w http.ResponseWriter, r *http.Request) {
-	serve(w, r, AdmitHandler(mutate))
-}
-func serveValidate(w http.ResponseWriter, r *http.Request) {
-	serve(w, r, AdmitHandler(validate))
+func handleMutate(w http.ResponseWriter, r *http.Request) {
+	serve(w, r, mutate)
 }
 
-// adds prefix 'prod' to every incoming Deployment, example: prod-apps
-func mutate(ar admission.AdmissionReview) *admission.AdmissionResponse {
-	log.Info().Msgf("mutating deployments")
-	deploymentResource := metav1.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
-	if ar.Request.Resource != deploymentResource {
-		log.Error().Msgf("expect resource to be %s", deploymentResource)
+func handleValidate(w http.ResponseWriter, r *http.Request) {
+	serve(w, r, validate)
+}
+
+func mutate(ar admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
+
+	configMapName := os.Getenv(keyConfigMapName)
+	caBundleFilename := os.Getenv(keyCABundleFilename)
+
+	// Deserialize and copy request object
+	pod := validateAndDeserialize(ar)
+	if pod == nil {
 		return nil
 	}
-	raw := ar.Request.Object.Raw
-	deployment := appsv1.Deployment{}
+	newPod := pod.DeepCopy()
 
-	if _, _, err := deserializer.Decode(raw, nil, &deployment); err != nil {
-		log.Err(err)
-		return &admission.AdmissionResponse{
-			Result: &metav1.Status{
-				Message: err.Error(),
-			},
+	// Inject ca bundle configmap if pods contains annotation
+	if pod.Annotations[os.Getenv(keyCABundleAnnotation)] == "true" {
+
+		log.Info().Msgf("mutating pod %s on namespace %s", pod.Name, pod.Namespace)
+
+		// Connect to to kubernetes cluster to check if configmap exists
+		clientSet, _ := getKubernetesClientSet()
+		ctx := context.Background()
+		configMap, _ := clientSet.CoreV1().ConfigMaps(fmt.Sprint(pod.Namespace)).Get(ctx, fmt.Sprint(configMapName), metav1.GetOptions{})
+
+		// Create configmap if not found
+		if configMap.Name == "" {
+			log.Info().Msgf("creating configmap %s on namespace %s", configMapName, pod.Namespace)
+			resp, err := http.Get(os.Getenv(keyCABundleURL))
+			if err != nil {
+				log.Error().Msgf("error fetching ca bundle: %v", err)
+				return nil
+			}
+			body, _ := ioutil.ReadAll(resp.Body)
+			if !strings.Contains(string(body), "-----BEGIN CERTIFICATE-----") {
+				log.Error().Msgf("invalid ca bundle: %v", string(body))
+				return nil
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if configMap, err = clientSet.CoreV1().ConfigMaps(pod.Namespace).Create(ctx, &corev1.ConfigMap{
+				TypeMeta: metav1.TypeMeta{},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprint(configMapName),
+					Namespace: pod.Namespace,
+				},
+				Data: map[string]string{
+					caBundleFilename: string(body),
+				},
+			}, metav1.CreateOptions{}); err != nil {
+				log.Error().Msgf("error creating configmap: %v", err)
+				return nil
+			}
 		}
+
+		// Add Volume to new pod
+		newPod.Spec.Volumes = append(newPod.Spec.Volumes, corev1.Volume{
+			Name: configMap.Name,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMap.Name,
+					},
+				},
+			},
+		})
+
+		// Add VolumeMounts to new pod containers
+		for i := range newPod.Spec.Containers {
+			newPod.Spec.Containers[i].VolumeMounts = append(newPod.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+				Name:      configMap.Name,
+				MountPath: "/etc/ssl/certs/" + caBundleFilename,
+				SubPath:   caBundleFilename,
+			})
+		}
+
 	}
-	newDeploymentName := fmt.Sprintf("prod-%s", deployment.GetName())
-	pt := admission.PatchTypeJSONPatch
-	deploymentPatch := fmt.Sprintf(`[{ "op": "add", "path": "/metadata/name", "value": "%s" }]`, newDeploymentName)
-	return &admission.AdmissionResponse{Allowed: true, PatchType: &pt, Patch: []byte(deploymentPatch)}
+
+	// Create mutation patch
+	patch, _ := jsondiff.Compare(pod, newPod)
+	encodedPatch, _ := json.Marshal(patch)
+
+	// Return AdmissionReview object with AdmissionResponse
+	pt := admissionv1.PatchTypeJSONPatch
+	return &admissionv1.AdmissionResponse{Allowed: true, PatchType: &pt, Patch: encodedPatch}
 }
 
-// verify if a Deployment has the 'prod' prefix name
-func validate(ar admission.AdmissionReview) *admission.AdmissionResponse {
-	log.Info().Msgf("validating deployments")
-	deploymentResource := metav1.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
-	if ar.Request.Resource != deploymentResource {
-		log.Error().Msgf("expect resource to be %s", deploymentResource)
+func validate(ar admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
+	pod := validateAndDeserialize(ar)
+	if pod == nil {
 		return nil
 	}
-	raw := ar.Request.Object.Raw
-	deployment := appsv1.Deployment{}
-	if _, _, err := deserializer.Decode(raw, nil, &deployment); err != nil {
-		log.Err(err)
-		return &admission.AdmissionResponse{
-			Result: &metav1.Status{
-				Message: err.Error(),
-			},
-		}
-	}
-	if !strings.HasPrefix(deployment.GetName(), "prod-") {
-		return &admission.AdmissionResponse{
-			Allowed: false, Result: &metav1.Status{
-				Message: "Deployment's prefix name \"prod\" not found",
-			},
-		}
-	}
-	return &admission.AdmissionResponse{Allowed: true}
+	return &admissionv1.AdmissionResponse{Allowed: true}
 }
 
 func main() {
 	var tlsKey, tlsCert string
-	flag.StringVar(&tlsKey, "tlsKey", "/etc/certs/tls.key", "Path to the TLS key")
-	flag.StringVar(&tlsCert, "tlsCert", "/etc/certs/tls.crt", "Path to the TLS certificate")
+	flag.StringVar(&tlsKey, "tlsKey", "/certs/tls.key", "Path to the TLS key")
+	flag.StringVar(&tlsCert, "tlsCert", "/certs/tls.crt", "Path to the TLS certificate")
 	flag.Parse()
-	http.HandleFunc("/mutate", serveMutate)
-	http.HandleFunc("/validate", serveValidate)
+	http.HandleFunc("/mutate", handleMutate)
+	http.HandleFunc("/validate", handleValidate)
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { return })
 	log.Info().Msg("Server started ...")
 	log.Fatal().Err(http.ListenAndServeTLS(":8443", tlsCert, tlsKey, nil)).Msg("webhook server exited")
 }

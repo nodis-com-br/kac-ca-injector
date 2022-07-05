@@ -3,5 +3,13 @@ docker_build(
     context = '.'
 )
 
-k8s_yaml(['./config/namespace.yaml', './config/secret.yaml'])
-k8s_yaml(helm('../../helm_charts/admission-controller', name='ca-injector', namespace='botland', values='./values/admission-controller.yaml'))
+k8s_yaml([
+    './config/namespace.yaml',
+    './config/secret.yaml',
+    './config/clusterrole.yaml',
+    './config/clusterrolebinding.yaml',
+    './config/mutatingwebhookconfiguration.yaml',
+    './config/service.yaml',
+    './config/serviceaccount.yaml',
+    './config/deployment.yaml',
+])

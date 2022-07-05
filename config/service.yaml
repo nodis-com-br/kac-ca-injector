@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ca-injector
+  namespace: botland
+spec:
+  ports:
+  - name: http
+    port: 443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app: ca-injector
+  type: ClusterIP

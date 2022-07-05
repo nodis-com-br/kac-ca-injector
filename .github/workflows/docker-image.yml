@@ -1,4 +1,4 @@
-name: docker-public-image
+name: docker-image
 
 on:
   workflow_dispatch: ~
@@ -10,8 +10,12 @@ on:
 jobs:
   build_metadata:
     uses: nodis-com-br/gha_workflow-jobs/.github/workflows/build_metadata.yaml@master
+  test_code:
+    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/testing.yaml@master
+    needs:
+      - build_metadata
   build_artifact:
-    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/publish_public_image.yaml@master
+    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/publish_docker_image.yaml@master
     needs:
       - build_metadata
   revert_bump:

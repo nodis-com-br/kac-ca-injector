@@ -1,10 +1,13 @@
-FROM ghcr.io/nodis-com-br/python:3.10.4
-
+FROM golang:1.18 as build
 WORKDIR /app
-COPY Pipfile /app/
-COPY Pipfile.lock /app/
+COPY go.mod .
+COPY go.sum .
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o serverd main.go
 
-RUN pipenv install --deploy --system
+FROM gcr.io/distroless/static-debian11
+COPY --from=build /app/serverd /
+EXPOSE 8443
 
-COPY src /app
-CMD ["uwsgi", "--module", "app:app"]
+CMD ["/serverd"]
