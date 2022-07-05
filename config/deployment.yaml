@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    app.kubernetes.io/instance: ca-injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: ca-injector
+    helm.sh/chart: admission-controller-1.0.1
+  name: ca-injector
+  namespace: botland
+spec:
+  replicas: null
+  selector:
+    matchLabels:
+      app: ca-injector
+  template:
+    metadata:
+      labels:
+        app: ca-injector
+    spec:
+      containers:
+      - env:
+        - name: CA_BUNDLE_ANNOTATION
+          value: nodis.com.br/ca-injector
+        - name: CA_BUNDLE_CONFIGMAP
+          value: nodis-private-ca-bundle
+        - name: CA_BUNDLE_FILENAME
+          value: nodis_private_ca_bundle.pem
+        - name: CA_BUNDLE_URL
+          value: https://nodis-backstage-miscellanea.s3.amazonaws.com/nodis_private_ca_bundle.pem
+        - name: UWSGI_HTTPS
+          value: 0.0.0.0:8443,/certs/tls.crt,/certs/tls.key
+        - name: UWSGI_MASTER
+          value: 'true'
+        - name: UWSGI_PROCESSES
+          value: '1'
+        - name: UWSGI_ROUTE
+          value: '/health donotlog:'
+        - name: UWSGI_STRICT
+          value: 'true'
+        - name: UWSGI_THREADS
+          value: '8'
+        image: kac-ca-injector
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 3
+        name: ca-injector
+        ports:
+        - containerPort: 8443
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 3
+        volumeMounts:
+        - mountPath: /certs
+          name: certs
+          readOnly: true
+      serviceAccountName: ca-injector
+      volumes:
+      - name: certs
+        secret:
+          secretName: botland-wildcard

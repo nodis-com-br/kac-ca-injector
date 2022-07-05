@@ -1,0 +1,17 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  annotations:
+    app.kubernetes.io/instance: ca-injector
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: ca-injector
+    helm.sh/chart: admission-controller-1.0.1
+  name: ca-injector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ca-injector
+subjects:
+- kind: ServiceAccount
+  name: ca-injector
+  namespace: botland
