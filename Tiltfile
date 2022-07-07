@@ -8,7 +8,7 @@ k8s_yaml([
     './config/secret.yaml',
     './config/clusterrole.yaml',
     './config/clusterrolebinding.yaml',
-    './config/mutatingwebhookconfiguration.yaml',
+    './config/webhook.yaml',
     './config/service.yaml',
     './config/serviceaccount.yaml',
     './config/deployment.yaml',

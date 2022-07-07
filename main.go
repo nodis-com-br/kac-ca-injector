@@ -74,7 +74,7 @@ func validateAndDeserialize(ar admissionv1.AdmissionReview) *corev1.Pod {
 	pod := corev1.Pod{}
 	_, _, _ = deserializer.Decode(ar.Request.Object.Raw, nil, &pod)
 	if pod.Name == "" {
-		msg := fmt.Sprint("deserialized pod is empty")
+		msg := fmt.Sprintf("deserialized pod is empty: %v", pod)
 		log.Error().Msg(msg)
 		return nil
 	} else {
