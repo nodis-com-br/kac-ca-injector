@@ -24,7 +24,7 @@ webhooks:
       - kube-node-lease
   objectSelector:
     matchExpressions:
-    - key: app.kubernetes.io/name
+    - key: app
       operator: NotIn
       values:
       - ca-injector

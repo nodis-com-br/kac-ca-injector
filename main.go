@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -32,11 +34,11 @@ const (
 )
 
 var (
-	runtimeScheme    = k8sRuntime.NewScheme()
-	codecFactory     = k8sSerializer.NewCodecFactory(runtimeScheme)
-	deserializer     = codecFactory.UniversalDeserializer()
-	resourceGVR      = metav1.GroupVersionResource{Version: "v1", Resource: "pods"}
-	resourceTypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+	runtimeScheme = k8sRuntime.NewScheme()
+	codecFactory  = k8sSerializer.NewCodecFactory(runtimeScheme)
+	deserializer  = codecFactory.UniversalDeserializer()
+	resourceGVR   = metav1.GroupVersionResource{Version: "v1", Resource: "pods"}
+	resourceGVK   = schema.GroupVersionKind{Version: "v1", Kind: "Pod"}
 )
 
 type AdmitFunc func(admissionv1.AdmissionReview) *admissionv1.AdmissionResponse
@@ -73,8 +75,8 @@ func validateAndDeserialize(ar admissionv1.AdmissionReview) *corev1.Pod {
 	}
 	// Deserialize pod from AdmissionRequest object
 	pod := corev1.Pod{}
-	_, _, _ = deserializer.Decode(ar.Request.Object.Raw, nil, &pod)
-	if pod.APIVersion == "" && pod.Kind == "" {
+	_, gvk, _ := deserializer.Decode(ar.Request.Object.Raw, nil, &pod)
+	if !reflect.DeepEqual(gvk, &resourceGVK) {
 		msg := fmt.Sprintf("deserialized pod is invalid: %v", pod)
 		log.Error().Msg(msg)
 		return nil
