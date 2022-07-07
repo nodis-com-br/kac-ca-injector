@@ -47,6 +47,7 @@ func init() {
 	_ = os.Setenv(keyCABundleFilename, "ca_bundle.pem")
 	_ = os.Setenv(keyCABundleAnnotation, "example.com/ca-injector")
 	_ = os.Setenv(keyCABundleURL, "https://curl.se/ca/cacert.pem")
+	_ = os.Setenv(keyPodNamespace, "botland")
 }
 
 // Helper functions
@@ -265,11 +266,36 @@ func TestInvalidCABundle(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response = requestProcessor(request, handleMutate)
 	if response.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected error %d got %d", http.StatusInternalServerError, response.StatusCode)
+		t.Errorf("expected status %d got %d", http.StatusInternalServerError, response.StatusCode)
 		return
 	}
 	_ = os.Setenv(keyCABundleURL, caBundleUrl)
 
+}
+
+func TestValidRequestWithoutNamespace(t *testing.T) {
+	t.Logf("testing func %s, valid request without namespace", getFuncName(handleMutate))
+	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
+	rawObject, _ = podFactory("", nil, annotations, 2)
+	admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
+	bodyReader = strings.NewReader(string(admissionReview[:]))
+	request = httptest.NewRequest(http.MethodPost, target, bodyReader)
+	request.Header.Set("Content-Type", "application/json")
+	response = requestProcessor(request, handleMutate)
+	clientSet, _ := getKubernetesClientSet()
+	_ = clientSet.CoreV1().ConfigMaps("default").Delete(context.Background(), os.Getenv(keyConfigMapName), metav1.DeleteOptions{})
+	if response.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d got %d", http.StatusOK, response.StatusCode)
+		return
+	}
+	body, _ := ioutil.ReadAll(response.Body)
+	admissionReviewResponse := admissionv1.AdmissionReview{}
+	_ = json.Unmarshal(body, &admissionReviewResponse)
+	var operations []jsonpatch.Patch
+	_ = json.Unmarshal(admissionReviewResponse.Response.Patch, &operations)
+	if len(operations) == 0 {
+		t.Errorf("patch operations array is empty")
+	}
 }
 
 func TestValidRequest(t *testing.T) {
@@ -284,7 +310,7 @@ func TestValidRequest(t *testing.T) {
 	clientSet, _ := getKubernetesClientSet()
 	_ = clientSet.CoreV1().ConfigMaps("default").Delete(context.Background(), os.Getenv(keyConfigMapName), metav1.DeleteOptions{})
 	if response.StatusCode != http.StatusOK {
-		t.Errorf("expected error %d got %d", http.StatusOK, response.StatusCode)
+		t.Errorf("expected status %d got %d", http.StatusOK, response.StatusCode)
 		return
 	}
 	body, _ := ioutil.ReadAll(response.Body)
@@ -295,5 +321,4 @@ func TestValidRequest(t *testing.T) {
 	if len(operations) == 0 {
 		t.Errorf("patch operations array is empty")
 	}
-
 }

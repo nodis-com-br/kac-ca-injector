@@ -4,7 +4,7 @@ metadata:
   name: nginx
   namespace: default
   annotations:
-    "example.com/ca-injector": "true"
+    "nodis.com.br/ca-injector": "true"
   labels:
     name: nginx
 spec:

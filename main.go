@@ -31,6 +31,7 @@ const (
 	keyConfigMapName      = "CA_BUNDLE_CONFIGMAP"
 	keyCABundleFilename   = "CA_BUNDLE_FILENAME"
 	keyCABundleAnnotation = "CA_BUNDLE_ANNOTATION"
+	keyPodNamespace       = "POD_NAMESPACE"
 )
 
 var (
@@ -167,16 +168,22 @@ func mutate(ar admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
 	// Inject ca bundle configmap if pods contains annotation
 	if pod.Annotations[os.Getenv(keyCABundleAnnotation)] == "true" {
 
-		log.Info().Msgf("mutating pod %s on namespace %s", pod.Name, pod.Namespace)
+		// If the pod is in the same namespace as the webhook, it will be empty
+		namespace := pod.Namespace
+		if namespace == "" {
+			namespace = os.Getenv(keyPodNamespace)
+		}
+
+		log.Info().Msgf("mutating pod %s%s on namespace %s", pod.Name, pod.GenerateName, namespace)
 
 		// Connect to to kubernetes cluster to check if configmap exists
 		clientSet, _ := getKubernetesClientSet()
 		ctx := context.Background()
-		configMap, _ := clientSet.CoreV1().ConfigMaps(fmt.Sprint(pod.Namespace)).Get(ctx, fmt.Sprint(configMapName), metav1.GetOptions{})
+		configMap, _ := clientSet.CoreV1().ConfigMaps(fmt.Sprint(namespace)).Get(ctx, fmt.Sprint(configMapName), metav1.GetOptions{})
 
 		// Create configmap if not found
 		if configMap.Name == "" {
-			log.Info().Msgf("creating configmap %s on namespace %s", configMapName, pod.Namespace)
+			log.Info().Msgf("creating configmap %s on namespace %s", configMapName, namespace)
 			resp, err := http.Get(os.Getenv(keyCABundleURL))
 			if err != nil {
 				log.Error().Msgf("error fetching ca bundle: %v", err)
@@ -188,11 +195,11 @@ func mutate(ar admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
 				return nil
 			}
 			defer func() { _ = resp.Body.Close() }()
-			if configMap, err = clientSet.CoreV1().ConfigMaps(pod.Namespace).Create(ctx, &corev1.ConfigMap{
+			if configMap, err = clientSet.CoreV1().ConfigMaps(namespace).Create(ctx, &corev1.ConfigMap{
 				TypeMeta: metav1.TypeMeta{},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      fmt.Sprint(configMapName),
-					Namespace: pod.Namespace,
+					Namespace: namespace,
 				},
 				Data: map[string]string{
 					caBundleFilename: string(body),
