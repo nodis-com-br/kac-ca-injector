@@ -196,7 +196,7 @@ func TestInvalidRequestObject(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		response = requestProcessor(request, handler)
 		if response.StatusCode != http.StatusInternalServerError {
-			t.Errorf("expected error %d got %d", http.StatusInternalServerError, response.StatusCode)
+			t.Errorf("expected status %d got %d", http.StatusInternalServerError, response.StatusCode)
 			return
 		}
 	}
@@ -253,8 +253,8 @@ func TestInvalidCABundleURL(t *testing.T) {
 
 }
 
-func TestIncorrectCABundleURL(t *testing.T) {
-	t.Logf("testing func %s, invalid ca bundle url", getFuncName(handleMutate))
+func TestInvalidCABundle(t *testing.T) {
+	t.Logf("testing func %s, invalid ca bundle", getFuncName(handleMutate))
 	caBundleUrl := os.Getenv(keyCABundleURL)
 	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
 	_ = os.Setenv(keyCABundleURL, "https://example.com")
