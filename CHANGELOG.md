@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.0.4](https://github.com/nodis-com-br/kac-ca-injector/compare/v1.0.3...v1.0.4) (2022-07-07)
+
+
+### Bug Fixes
+
+* fixed validateAndDeserialize method pod validation ([811d482](https://github.com/nodis-com-br/kac-ca-injector/commit/811d482838e556fbeaccff6611f18bf7311c2def))
+
 ### [1.0.3](https://github.com/nodis-com-br/kac-ca-injector/compare/v1.0.2...v1.0.3) (2022-07-07)
 
 ### [1.0.2](https://github.com/nodis-com-br/kac-ca-injector/compare/v1.0.1...v1.0.2) (2022-07-05)
