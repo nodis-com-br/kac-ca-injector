@@ -26,11 +26,6 @@ jobs:
     uses: nodis-com-br/gha_workflow-jobs/.github/workflows/publish_docker_image.yaml@master
     needs:
       - build_metadata
-    secrets:
-      openvpn_config: ${{ secrets.OPENVPN_CONFIG }}
-      vault_addr: ${{ secrets.VAULT_ADDR }}
-      vault_approle_role_id: ${{ secrets.VAULT_APPROLE_ROLE_ID }}
-      vault_approle_secret_id: ${{ secrets.VAULT_APPROLE_SECRET_ID }}
   revert_bump:
     uses: nodis-com-br/gha_workflow-jobs/.github/workflows/revert_bump.yaml@master
     needs:
