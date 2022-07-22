@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"net/http"
 	"os"
-	"reflect"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -20,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sRuntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sSerializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -32,6 +32,8 @@ const (
 	keyCABundleFilename   = "CA_BUNDLE_FILENAME"
 	keyCABundleAnnotation = "CA_BUNDLE_ANNOTATION"
 	keyPodNamespace       = "POD_NAMESPACE"
+	keyDebug              = "DEBUG"
+	keyKubeconfig         = "KUBECONFIG"
 )
 
 var (
@@ -54,7 +56,7 @@ func init() {
 
 func setLogLevel() {
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if os.Getenv("DEBUG") == "true" {
+	if os.Getenv(keyDebug) == "true" {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
 }
@@ -62,7 +64,7 @@ func setLogLevel() {
 func getKubernetesClientSet() (*kubernetes.Clientset, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
-		config, _ = clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+		config, _ = clientcmd.BuildConfigFromFlags("", os.Getenv(keyKubeconfig))
 	}
 	return kubernetes.NewForConfig(config)
 }
@@ -70,15 +72,15 @@ func getKubernetesClientSet() (*kubernetes.Clientset, error) {
 func validateAndDeserialize(ar admissionv1.AdmissionReview) *corev1.Pod {
 	// Validate resource type
 	if ar.Request.Resource != resourceGVR {
-		msg := fmt.Sprintf("expect resource to be %s", resourceGVR)
+		msg := fmt.Sprintf("expect resource to be %s, got %s", resourceGVR, ar.Request.Resource)
 		log.Error().Msg(msg)
 		return nil
 	}
 	// Deserialize pod from AdmissionRequest object
 	pod := corev1.Pod{}
 	_, gvk, _ := deserializer.Decode(ar.Request.Object.Raw, nil, &pod)
-	if !reflect.DeepEqual(gvk, &resourceGVK) {
-		msg := fmt.Sprintf("deserialized pod is invalid: %v", pod)
+	if *gvk != resourceGVK {
+		msg := fmt.Sprintf("deserialized object is invalid: %v", pod)
 		log.Error().Msg(msg)
 		return nil
 	} else {
@@ -87,8 +89,6 @@ func validateAndDeserialize(ar admissionv1.AdmissionReview) *corev1.Pod {
 }
 
 func serve(w http.ResponseWriter, r *http.Request, admitFunc AdmitFunc) {
-
-	setLogLevel()
 
 	// verify the request method
 	if r.Method != http.MethodPost {
@@ -109,7 +109,7 @@ func serve(w http.ResponseWriter, r *http.Request, admitFunc AdmitFunc) {
 
 	var body []byte
 	if r.Body != nil {
-		if data, err := ioutil.ReadAll(r.Body); err == nil {
+		if data, err := io.ReadAll(r.Body); err == nil {
 			body = data
 		}
 	}
@@ -122,22 +122,22 @@ func serve(w http.ResponseWriter, r *http.Request, admitFunc AdmitFunc) {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	} else {
-		requestedAdmissionReview, ok := obj.(*admissionv1.AdmissionReview)
+		requestAR, ok := obj.(*admissionv1.AdmissionReview)
 		if !ok {
 			msg := fmt.Sprintf("Expected v1.AdmissionReview but got: %T", obj)
 			log.Error().Msg(msg)
 			http.Error(w, msg, http.StatusBadRequest)
 			return
 		}
-		responseAdmissionReview := &admissionv1.AdmissionReview{}
-		responseAdmissionReview.SetGroupVersionKind(*gvk)
-		responseAdmissionReview.Response = admitFunc(*requestedAdmissionReview)
-		if responseAdmissionReview.Response == nil {
+		responseAR := &admissionv1.AdmissionReview{}
+		responseAR.SetGroupVersionKind(*gvk)
+		responseAR.Response = admitFunc(*requestAR)
+		if responseAR.Response == nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		responseAdmissionReview.Response.UID = requestedAdmissionReview.Request.UID
-		responseObj = responseAdmissionReview
+		responseAR.Response.UID = requestAR.Request.UID
+		responseObj = responseAR
 	}
 	log.Debug().Msgf("sending response: %v", responseObj)
 	respBytes, _ := json.Marshal(responseObj)
@@ -146,10 +146,12 @@ func serve(w http.ResponseWriter, r *http.Request, admitFunc AdmitFunc) {
 }
 
 func handleMutate(w http.ResponseWriter, r *http.Request) {
+	setLogLevel()
 	serve(w, r, mutate)
 }
 
 func handleValidate(w http.ResponseWriter, r *http.Request) {
+	setLogLevel()
 	serve(w, r, validate)
 }
 
@@ -168,7 +170,8 @@ func mutate(ar admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
 	// Inject ca bundle configmap if pods contains annotation
 	if pod.Annotations[os.Getenv(keyCABundleAnnotation)] == "true" {
 
-		// If the pod is in the same namespace as the webhook, it will be empty
+		// If the pod is in the same namespace as the webhook, the namespace
+		// will be empty and must be set to the running namespace
 		namespace := pod.Namespace
 		if namespace == "" {
 			namespace = os.Getenv(keyPodNamespace)
@@ -190,11 +193,11 @@ func mutate(ar admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
 				return nil
 			}
 			body, _ := ioutil.ReadAll(resp.Body)
+			defer func() { _ = resp.Body.Close() }()
 			if !strings.Contains(string(body), "-----BEGIN CERTIFICATE-----") {
 				log.Error().Msgf("invalid ca bundle: %v", string(body))
 				return nil
 			}
-			defer func() { _ = resp.Body.Close() }()
 			if configMap, err = clientSet.CoreV1().ConfigMaps(namespace).Create(ctx, &corev1.ConfigMap{
 				TypeMeta: metav1.TypeMeta{},
 				ObjectMeta: metav1.ObjectMeta{

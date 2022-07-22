@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -21,14 +22,22 @@ import (
 )
 
 var (
-	handlerFuncs    = []HandleFunc{handleValidate, handleMutate}
-	target          = "/"
 	request         *http.Request
 	response        *http.Response
-	bodyReader      *strings.Reader
+	annotations     map[string]string
 	rawObject       []byte
 	admissionReview []byte
-	invalidResource = corev1.ConfigMap{
+	caBundleUrl     string
+)
+
+var (
+	handlerFuncs     = []HandleFunc{handleValidate, handleMutate}
+	target           = "/"
+	namespace        = "default"
+	defaultMediaType = "application/json"
+	invalidMediaType = "text/html"
+	invalidNamespace = "invalid"
+	invalidResource  = corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "v1",
 			Kind:       "ConfigMap",
@@ -41,13 +50,15 @@ var (
 )
 
 func init() {
-	_ = os.Setenv("DEBUG", "true")
-	_ = os.Setenv("KUBECONFIG", "./kubeconfig")
+	_ = os.Setenv(keyDebug, "true")
+	_ = os.Setenv(keyKubeconfig, "./kubeconfig")
 	_ = os.Setenv(keyConfigMapName, "ca-bundle")
 	_ = os.Setenv(keyCABundleFilename, "ca_bundle.pem")
 	_ = os.Setenv(keyCABundleAnnotation, "example.com/ca-injector")
 	_ = os.Setenv(keyCABundleURL, "https://curl.se/ca/cacert.pem")
 	_ = os.Setenv(keyPodNamespace, "botland")
+	caBundleUrl = os.Getenv(keyCABundleURL)
+	annotations = map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
 }
 
 // Helper functions
@@ -55,6 +66,32 @@ func init() {
 func getFuncName(temp interface{}) string {
 	strs := strings.Split(runtime.FuncForPC(reflect.ValueOf(temp).Pointer()).Name(), ".")
 	return strs[len(strs)-1]
+}
+
+func invalidStatusCode(t *testing.T, expected int, actual int) bool {
+	if actual != expected {
+		t.Errorf("expected status %d got %d", expected, actual)
+		return true
+	}
+	return false
+}
+
+func invalidResponseBody(t *testing.T, body io.Reader) bool {
+	var admissionReviewResponse admissionv1.AdmissionReview
+	var operations []jsonpatch.Patch
+	encodedBody, _ := ioutil.ReadAll(body)
+	_ = json.Unmarshal(encodedBody, &admissionReviewResponse)
+	_ = json.Unmarshal(admissionReviewResponse.Response.Patch, &operations)
+	if len(operations) == 0 {
+		t.Errorf("patch operations array is empty")
+		return true
+	}
+	return false
+}
+
+func deleteConfigMap(namespace string) {
+	clientSet, _ := getKubernetesClientSet()
+	_ = clientSet.CoreV1().ConfigMaps(namespace).Delete(context.Background(), os.Getenv(keyConfigMapName), metav1.DeleteOptions{})
 }
 
 func podFactory(namespace string, labels map[string]string, annotations map[string]string, volumeCount int) ([]byte, error) {
@@ -108,7 +145,13 @@ func admissionReviewFactory(gvr metav1.GroupVersionResource, rawObject []byte) (
 	})
 }
 
-func requestProcessor(req *http.Request, handlerFunc HandleFunc) *http.Response {
+func testRequest(method string, handler HandleFunc, rawBody string, mediaType string) *http.Response {
+	request = httptest.NewRequest(method, target, strings.NewReader(rawBody))
+	request.Header.Set("Content-Type", mediaType)
+	return generateResponse(request, handler)
+}
+
+func generateResponse(req *http.Request, handlerFunc HandleFunc) *http.Response {
 	w := httptest.NewRecorder()
 	handlerFunc(w, req)
 	response = w.Result()
@@ -123,35 +166,26 @@ func TestForbiddenMethods(t *testing.T) {
 	for _, handler := range handlerFuncs {
 		for _, method := range forbiddenMethods {
 			t.Logf("testing func %s, forbidden method %s", getFuncName(handler), method)
-			request = httptest.NewRequest(method, target, nil)
-			response = requestProcessor(request, handler)
-			if response.StatusCode != http.StatusMethodNotAllowed {
-				t.Errorf("expected status %d got %d", http.StatusMethodNotAllowed, response.StatusCode)
-			}
+			response = testRequest(method, handler, "", defaultMediaType)
+			_ = invalidStatusCode(t, http.StatusMethodNotAllowed, response.StatusCode)
 		}
 	}
 }
 
-func TestMissingMediaType(t *testing.T) {
+func TestInvalidMediaType(t *testing.T) {
 	for _, handler := range handlerFuncs {
-		t.Logf("testing func %s, missing media type", getFuncName(handler))
+		t.Logf("testing func %s, invalid media type", getFuncName(handler))
 		request = httptest.NewRequest(http.MethodPost, target, nil)
-		response = requestProcessor(request, handler)
-		if response.StatusCode != http.StatusUnsupportedMediaType {
-			t.Errorf("expected status %d got %d", http.StatusUnsupportedMediaType, response.StatusCode)
-		}
+		response = testRequest(http.MethodPost, handler, "", invalidMediaType)
+		_ = invalidStatusCode(t, http.StatusUnsupportedMediaType, response.StatusCode)
 	}
 }
 
 func TestEmptyBody(t *testing.T) {
 	for _, handler := range handlerFuncs {
 		t.Logf("testing func %s, empty body", getFuncName(handler))
-		request = httptest.NewRequest(http.MethodPost, target, nil)
-		request.Header.Set("Content-Type", "application/json")
-		response = requestProcessor(request, handler)
-		if response.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected status %d got %d", http.StatusBadRequest, response.StatusCode)
-		}
+		response = testRequest(http.MethodPost, handler, "", defaultMediaType)
+		_ = invalidStatusCode(t, http.StatusBadRequest, response.StatusCode)
 	}
 }
 
@@ -159,13 +193,8 @@ func TestInvalidRequestBody(t *testing.T) {
 	for _, handler := range handlerFuncs {
 		t.Logf("testing func %s, invalid request", getFuncName(handler))
 		invalidBody, _ := json.Marshal(invalidResource)
-		bodyReader = strings.NewReader(string(invalidBody))
-		request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-		request.Header.Set("Content-Type", "application/json")
-		response = requestProcessor(request, handler)
-		if response.StatusCode != http.StatusBadRequest {
-			t.Errorf("expected status %d got %d", http.StatusBadRequest, response.StatusCode)
-		}
+		response = testRequest(http.MethodPost, handler, string(invalidBody), defaultMediaType)
+		_ = invalidStatusCode(t, http.StatusBadRequest, response.StatusCode)
 	}
 }
 
@@ -176,14 +205,8 @@ func TestInvalidRequestResource(t *testing.T) {
 		t.Logf("testing func %s, invalid request resource", getFuncName(handler))
 		rawObject, _ = json.Marshal(invalidResource)
 		admissionReview, _ = admissionReviewFactory(invalidResourceGVR, rawObject)
-		bodyReader = strings.NewReader(string(admissionReview[:]))
-		request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-		request.Header.Set("Content-Type", "application/json")
-		response = requestProcessor(request, handler)
-		if response.StatusCode != http.StatusInternalServerError {
-			t.Errorf("expected error %d got %d", http.StatusInternalServerError, response.StatusCode)
-			return
-		}
+		response = testRequest(http.MethodPost, handler, string(admissionReview[:]), defaultMediaType)
+		_ = invalidStatusCode(t, http.StatusInternalServerError, response.StatusCode)
 	}
 }
 
@@ -192,29 +215,18 @@ func TestInvalidRequestObject(t *testing.T) {
 		t.Logf("testing func %s, valid request, invalid kind", getFuncName(handler))
 		rawObject, _ = json.Marshal(invalidResource)
 		admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-		bodyReader = strings.NewReader(string(admissionReview[:]))
-		request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-		request.Header.Set("Content-Type", "application/json")
-		response = requestProcessor(request, handler)
-		if response.StatusCode != http.StatusInternalServerError {
-			t.Errorf("expected status %d got %d", http.StatusInternalServerError, response.StatusCode)
-			return
-		}
+		response = testRequest(http.MethodPost, handler, string(admissionReview[:]), defaultMediaType)
+		_ = invalidStatusCode(t, http.StatusInternalServerError, response.StatusCode)
 	}
 }
 
 func TestMissingPodAnnotation(t *testing.T) {
 	for _, handler := range handlerFuncs {
 		t.Logf("testing func %s, missing annotation", getFuncName(handler))
-		rawObject, _ = podFactory("default", nil, nil, 0)
+		rawObject, _ = podFactory(namespace, nil, nil, 0)
 		admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-		bodyReader = strings.NewReader(string(admissionReview[:]))
-		request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-		request.Header.Set("Content-Type", "application/json")
-		response = requestProcessor(request, handler)
-		if response.StatusCode != http.StatusOK {
-			t.Errorf("expected status %d got %d", http.StatusOK, response.StatusCode)
-		}
+		response = testRequest(http.MethodPost, handler, string(admissionReview[:]), defaultMediaType)
+		_ = invalidStatusCode(t, http.StatusOK, response.StatusCode)
 	}
 }
 
@@ -222,103 +234,52 @@ func TestMissingPodAnnotation(t *testing.T) {
 
 func TestInvalidNamespace(t *testing.T) {
 	t.Logf("testing func %s, invalid request object", getFuncName(handleMutate))
-	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
-	rawObject, _ = podFactory("invalid", nil, annotations, 0)
+	rawObject, _ = podFactory(invalidNamespace, nil, annotations, 0)
 	admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-	bodyReader = strings.NewReader(string(admissionReview[:]))
-	request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-	request.Header.Set("Content-Type", "application/json")
-	response = requestProcessor(request, handleMutate)
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected error %d got %d", http.StatusInternalServerError, response.StatusCode)
-		return
-	}
+	response = testRequest(http.MethodPost, handleMutate, string(admissionReview[:]), defaultMediaType)
+	_ = invalidStatusCode(t, http.StatusInternalServerError, response.StatusCode)
 }
 
 func TestInvalidCABundleURL(t *testing.T) {
 	t.Logf("testing func %s, invalid ca bundle url", getFuncName(handleMutate))
-	caBundleUrl := os.Getenv(keyCABundleURL)
-	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
 	_ = os.Setenv(keyCABundleURL, "https://invalid.local")
-	rawObject, _ = podFactory("default", nil, annotations, 2)
+	defer func() { _ = os.Setenv(keyCABundleURL, caBundleUrl) }()
+	rawObject, _ = podFactory(namespace, nil, annotations, 2)
 	admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-	bodyReader = strings.NewReader(string(admissionReview[:]))
-	request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-	request.Header.Set("Content-Type", "application/json")
-	response = requestProcessor(request, handleMutate)
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected error %d got %d", http.StatusInternalServerError, response.StatusCode)
-		return
-	}
-	_ = os.Setenv(keyCABundleURL, caBundleUrl)
-
+	response = testRequest(http.MethodPost, handleMutate, string(admissionReview[:]), defaultMediaType)
+	_ = invalidStatusCode(t, http.StatusInternalServerError, response.StatusCode)
 }
 
 func TestInvalidCABundle(t *testing.T) {
 	t.Logf("testing func %s, invalid ca bundle", getFuncName(handleMutate))
-	caBundleUrl := os.Getenv(keyCABundleURL)
-	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
 	_ = os.Setenv(keyCABundleURL, "https://example.com")
-	rawObject, _ = podFactory("default", nil, annotations, 2)
+	defer func() { _ = os.Setenv(keyCABundleURL, caBundleUrl) }()
+	rawObject, _ = podFactory(namespace, nil, annotations, 2)
 	admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-	bodyReader = strings.NewReader(string(admissionReview[:]))
-	request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-	request.Header.Set("Content-Type", "application/json")
-	response = requestProcessor(request, handleMutate)
-	if response.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected status %d got %d", http.StatusInternalServerError, response.StatusCode)
-		return
-	}
-	_ = os.Setenv(keyCABundleURL, caBundleUrl)
-
+	response = testRequest(http.MethodPost, handleMutate, string(admissionReview[:]), defaultMediaType)
+	_ = invalidStatusCode(t, http.StatusInternalServerError, response.StatusCode)
 }
 
 func TestValidRequestWithoutNamespace(t *testing.T) {
 	t.Logf("testing func %s, valid request without namespace", getFuncName(handleMutate))
-	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
 	rawObject, _ = podFactory("", nil, annotations, 2)
 	admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-	bodyReader = strings.NewReader(string(admissionReview[:]))
-	request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-	request.Header.Set("Content-Type", "application/json")
-	response = requestProcessor(request, handleMutate)
-	clientSet, _ := getKubernetesClientSet()
-	_ = clientSet.CoreV1().ConfigMaps("default").Delete(context.Background(), os.Getenv(keyConfigMapName), metav1.DeleteOptions{})
-	if response.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d got %d", http.StatusOK, response.StatusCode)
+	response = testRequest(http.MethodPost, handleMutate, string(admissionReview[:]), defaultMediaType)
+	deleteConfigMap(namespace)
+	if invalidStatusCode(t, http.StatusOK, response.StatusCode) {
 		return
 	}
-	body, _ := ioutil.ReadAll(response.Body)
-	admissionReviewResponse := admissionv1.AdmissionReview{}
-	_ = json.Unmarshal(body, &admissionReviewResponse)
-	var operations []jsonpatch.Patch
-	_ = json.Unmarshal(admissionReviewResponse.Response.Patch, &operations)
-	if len(operations) == 0 {
-		t.Errorf("patch operations array is empty")
-	}
+	_ = invalidResponseBody(t, response.Body)
 }
 
 func TestValidRequest(t *testing.T) {
 	t.Logf("testing func %s, valid request", getFuncName(handleMutate))
-	annotations := map[string]string{os.Getenv(keyCABundleAnnotation): "true"}
-	rawObject, _ = podFactory("default", nil, annotations, 2)
+	rawObject, _ = podFactory(namespace, nil, annotations, 2)
 	admissionReview, _ = admissionReviewFactory(resourceGVR, rawObject)
-	bodyReader = strings.NewReader(string(admissionReview[:]))
-	request = httptest.NewRequest(http.MethodPost, target, bodyReader)
-	request.Header.Set("Content-Type", "application/json")
-	response = requestProcessor(request, handleMutate)
-	clientSet, _ := getKubernetesClientSet()
-	_ = clientSet.CoreV1().ConfigMaps("default").Delete(context.Background(), os.Getenv(keyConfigMapName), metav1.DeleteOptions{})
-	if response.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d got %d", http.StatusOK, response.StatusCode)
+	response = testRequest(http.MethodPost, handleMutate, string(admissionReview[:]), defaultMediaType)
+	deleteConfigMap(namespace)
+	if invalidStatusCode(t, http.StatusOK, response.StatusCode) {
 		return
 	}
-	body, _ := ioutil.ReadAll(response.Body)
-	admissionReviewResponse := admissionv1.AdmissionReview{}
-	_ = json.Unmarshal(body, &admissionReviewResponse)
-	var operations []jsonpatch.Patch
-	_ = json.Unmarshal(admissionReviewResponse.Response.Patch, &operations)
-	if len(operations) == 0 {
-		t.Errorf("patch operations array is empty")
-	}
+	_ = invalidResponseBody(t, response.Body)
 }
