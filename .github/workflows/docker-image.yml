@@ -10,26 +10,27 @@ on:
     branches:
       - master
       - main
+
 jobs:
-  build_metadata:
-    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/build_metadata.yaml@master
+  get_metadata:
+    uses: nodis-com-br/gha-workflows/.github/workflows/get-metadata.yaml@master
   test_code:
-    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/testing.yaml@master
+    uses: nodis-com-br/gha-workflows/.github/workflows/testing.yaml@master
     needs:
-      - build_metadata
+      - get_metadata
     secrets:
       openvpn_config: ${{ secrets.OPENVPN_CONFIG }}
       vault_addr: ${{ secrets.VAULT_ADDR }}
       vault_approle_role_id: ${{ secrets.VAULT_APPROLE_ROLE_ID }}
       vault_approle_secret_id: ${{ secrets.VAULT_APPROLE_SECRET_ID }}
-  build_artifact:
-    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/publish_docker_image.yaml@master
+  publish_artifact:
+    uses: nodis-com-br/gha-workflows/.github/workflows/publish-docker-image.yaml@master
     needs:
-      - build_metadata
+      - get_metadata
   revert_bump:
-    uses: nodis-com-br/gha_workflow-jobs/.github/workflows/revert_bump.yaml@master
+    uses: nodis-com-br/gha-workflows/.github/workflows/revert-bump.yaml@master
     needs:
-      - build_artifact
+      - publish_artifact
     if: always()
     with:
-      build_result: ${{ needs.build_artifact.result }}
+      build_result: ${{ needs.publish_artifact.result }}
