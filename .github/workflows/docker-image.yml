@@ -27,6 +27,8 @@ jobs:
     uses: nodis-com-br/gha-workflows/.github/workflows/publish-docker-image.yaml@master
     needs:
       - get_metadata
+    secrets:
+      openvpn_config: ${{ secrets.OPENVPN_CONFIG }}
   revert_bump:
     uses: nodis-com-br/gha-workflows/.github/workflows/revert-bump.yaml@master
     needs:
