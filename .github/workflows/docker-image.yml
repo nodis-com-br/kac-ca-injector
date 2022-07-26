@@ -29,6 +29,7 @@ jobs:
       - get_metadata
     secrets:
       openvpn_config: ${{ secrets.OPENVPN_CONFIG }}
+      gh_packages_token: ${{ secrets.GH_PACKAGES_TOKEN }}
   revert_bump:
     uses: nodis-com-br/gha-workflows/.github/workflows/revert-bump.yaml@master
     needs:
