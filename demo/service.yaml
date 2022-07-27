@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: ca-injector
-  namespace: botland
+  namespace: example
 spec:
   ports:
   - name: http

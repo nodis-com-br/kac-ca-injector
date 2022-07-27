@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ca-injector
-  namespace: botland
+  namespace: example
 spec:
   replicas: 1
   selector:
@@ -23,18 +23,6 @@ spec:
           value: ca_bundle.pem
         - name: CA_BUNDLE_URL
           value: https://curl.se/ca/cacert.pem
-        - name: UWSGI_HTTPS
-          value: 0.0.0.0:8443,/certs/tls.crt,/certs/tls.key
-        - name: UWSGI_MASTER
-          value: 'true'
-        - name: UWSGI_PROCESSES
-          value: '1'
-        - name: UWSGI_ROUTE
-          value: '/health donotlog:'
-        - name: UWSGI_STRICT
-          value: 'true'
-        - name: UWSGI_THREADS
-          value: '8'
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:
@@ -65,4 +53,4 @@ spec:
       volumes:
         - name: certs
           secret:
-            secretName: botland-wildcard
+            secretName: example

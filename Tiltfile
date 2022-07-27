@@ -4,12 +4,12 @@ docker_build(
 )
 
 k8s_yaml([
-    './config/namespace.yaml',
-    './config/secret.yaml',
-    './config/clusterrole.yaml',
-    './config/clusterrolebinding.yaml',
-    './config/webhook.yaml',
-    './config/service.yaml',
-    './config/serviceaccount.yaml',
-    './config/deployment.yaml',
+    './demo/namespace.yaml',
+    './demo/secret.yaml',
+    './demo/clusterrole.yaml',
+    './demo/clusterrolebinding.yaml',
+    './demo/webhook.yaml',
+    './demo/service.yaml',
+    './demo/serviceaccount.yaml',
+    './demo/deployment.yaml',
 ])
