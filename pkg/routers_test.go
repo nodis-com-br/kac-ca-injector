@@ -79,10 +79,9 @@ func fakeRequest(ctx context.Context, r *gin.Engine, method string, route string
 
 func Test_HealthcheckRoute(t *testing.T) {
 	router := NewRouter()
-
 	w := fakeRequest(context.Background(), router, http.MethodGet, "/health", "")
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "Ok", w.Body.String())
+	assert.Equal(t, `{"status":"ok"}`, w.Body.String())
 }
 
 func Test_ReviewerRoutes(t *testing.T) {
