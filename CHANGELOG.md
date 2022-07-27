@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.1.0](https://github.com/nodis-com-br/kac-ca-injector/compare/v1.0.7...v1.1.0) (2022-07-27)
+
+
+### Features
+
+* refactored plugin to use with gin framework ([9a5d6be](https://github.com/nodis-com-br/kac-ca-injector/commit/9a5d6befb3e405d8faa5fe5b9fa9369ca2a593d0))
+
+
+### Bug Fixes
+
+* correted healthcheck response assertion on tests ([c76291e](https://github.com/nodis-com-br/kac-ca-injector/commit/c76291ef4cb5f8c217c682aaa80a2c0f98d327ea))
+
 ### [1.0.7](https://github.com/nodis-com-br/kac-ca-injector/compare/v1.0.6...v1.0.7) (2022-07-22)
 
 ### [1.0.6](https://github.com/nodis-com-br/kac-ca-injector/compare/v1.0.5...v1.0.6) (2022-07-07)
